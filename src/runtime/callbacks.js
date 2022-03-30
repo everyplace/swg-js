@@ -261,11 +261,11 @@ export class Callbacks {
   setCallback_(id, callback) {
     if (this.callbacks_[id]) {
       warn(
-        `[swg.js]: You have registered multiple callbacks for the same response.`
+        `[swg.js]: You have registered ${this.callbacks_[id].length+1} callbacks for the same response. Each will be called with the same data.`
       );
     }
-    this.callbacks_[id] = callback;
-    // If result already exist, execute the callback right away.
+    this.callbacks_[id] = [...this.callbacks_[id], callback];
+    // If result already exist, execute only the new callback right away.
     if (id in this.resultBuffer_) {
       this.executeCallback_(id, callback, this.resultBuffer_[id]);
     }
@@ -279,11 +279,13 @@ export class Callbacks {
    */
   trigger_(id, data) {
     this.resultBuffer_[id] = data;
-    const callback = this.callbacks_[id];
-    if (callback) {
-      this.executeCallback_(id, callback, data);
+    const callbacks = this.callbacks_[id];
+    if (callbacks.length>0) {
+      for(let callback of callbacks) {
+        this.executeCallback_(id, callback, data);
+      }
     }
-    return !!callback;
+    return !!callbacks
   }
 
   /**
