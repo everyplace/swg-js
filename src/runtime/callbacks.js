@@ -35,7 +35,7 @@ export class Callbacks {
   /**
    */
   constructor() {
-    /** @private @const {!Object<CallbackId, function(*)>} */
+    /** @private @const {!Object<CallbackId, Iterable<function(*)>|null>} */
     this.callbacks_ = {};
     /** @private @const {!Object<CallbackId, *>} */
     this.resultBuffer_ = {};
@@ -261,10 +261,14 @@ export class Callbacks {
   setCallback_(id, callback) {
     if (this.callbacks_[id]) {
       warn(
-        `[swg.js]: You have registered ${this.callbacks_[id].length+1} callbacks for the same response. Each will be called with the same data.`
+        `[swg.js]: You have registered 
+        ${this.callbacks_[id].length + 1} 
+        callbacks for the same response. Each will be called with the same data.`
       );
     }
-    this.callbacks_[id] = [...this.callbacks_[id], callback];
+    this.callbacks_[id] = Array.isArray(this.callbacks_[id])
+      ? this.callbacks_[id].push(callback)
+      : this.callbacks_[id][callback];
     // If result already exist, execute only the new callback right away.
     if (id in this.resultBuffer_) {
       this.executeCallback_(id, callback, this.resultBuffer_[id]);
@@ -280,12 +284,12 @@ export class Callbacks {
   trigger_(id, data) {
     this.resultBuffer_[id] = data;
     const callbacks = this.callbacks_[id];
-    if (callbacks && callbacks.length>0) {
-      for(let callback of callbacks) {
+    if (callbacks && callbacks.length > 0) {
+      for (const callback of callbacks) {
         this.executeCallback_(id, callback, data);
       }
     }
-    return !!callbacks
+    return !!callbacks;
   }
 
   /**
