@@ -280,7 +280,7 @@ export class Callbacks {
   trigger_(id, data) {
     this.resultBuffer_[id] = data;
     const callbacks = this.callbacks_[id];
-    if (callbacks.length>0) {
+    if (callbacks && callbacks.length>0) {
       for(let callback of callbacks) {
         this.executeCallback_(id, callback, data);
       }
