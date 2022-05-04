@@ -81,6 +81,9 @@ export class AutoPromptManager {
     /** @private {boolean} */
     this.autoPromptDisplayed_ = false;
 
+    /** @private {boolean} */
+    this.hasStoredImpression = false;
+
     /** @private {?AudienceActionFlow} */
     this.lastAudienceActionFlow_ = null;
 
@@ -258,7 +261,7 @@ export class AutoPromptManager {
     }
 
     // Fetched config returned no maximum cap.
-    if (autoPromptConfig.maxImpressionsPerWeek === undefined) {
+    if (autoPromptConfig.impressionConfig.maxImpressions === undefined) {
       return Promise.resolve(true);
     }
 
@@ -269,15 +272,17 @@ export class AutoPromptManager {
         const impressions = values[0];
         const dismissals = values[1];
 
+        const lastImpression = impressions[impressions.length - 1];
+        const lastDismissal = dismissals[dismissals.length - 1];
+
         // If the user has reached the maxDismissalsPerWeek, and
         // maxDismissalsResultingHideSeconds has not yet passed, don't show the
         // prompt.
         if (
-          autoPromptConfig.explicitDismissalConfig.maxDismissalsPerWeek !==
-            undefined &&
+          autoPromptConfig.explicitDismissalConfig.maxDismissalsPerWeek &&
           dismissals.length >=
             autoPromptConfig.explicitDismissalConfig.maxDismissalsPerWeek &&
-          Date.now() - dismissals[dismissals.length - 1] <
+          Date.now() - lastDismissal <
             (autoPromptConfig.explicitDismissalConfig
               .maxDismissalsResultingHideSeconds || 0) *
               SECOND_IN_MILLIS
@@ -285,26 +290,45 @@ export class AutoPromptManager {
           return false;
         }
 
-        // If the user has previously dismissed the prompt, and backoffSeconds has
+        // If the user has previously dismissed the prompt, and backOffSeconds has
         // not yet passed, don't show the prompt.
         if (
-          autoPromptConfig.explicitDismissalConfig.backoffSeconds !==
-            undefined &&
+          autoPromptConfig.explicitDismissalConfig.backOffSeconds &&
           dismissals.length > 0 &&
-          Date.now() - dismissals[dismissals.length - 1] <
-            autoPromptConfig.explicitDismissalConfig.backoffSeconds *
+          Date.now() - lastDismissal <
+            autoPromptConfig.explicitDismissalConfig.backOffSeconds *
               SECOND_IN_MILLIS
         ) {
           return false;
         }
 
-        // If the user has reached maxImpressionsPerWeek, don't show the prompt.
+        // If the user has reached the maxImpressions, and
+        // maxImpressionsResultingHideSeconds has not yet passed, don't show the
+        // prompt.
         if (
-          autoPromptConfig.maxImpressionsPerWeek !== undefined &&
-          impressions.length >= autoPromptConfig.maxImpressionsPerWeek
+          autoPromptConfig.impressionConfig.maxImpressions &&
+          impressions.length >=
+            autoPromptConfig.impressionConfig.maxImpressions &&
+          Date.now() - lastImpression <
+            (autoPromptConfig.impressionConfig
+              .maxImpressionsResultingHideSeconds || 0) *
+              SECOND_IN_MILLIS
         ) {
           return false;
         }
+
+        // If the user has seen the prompt, and backOffSeconds has
+        // not yet passed, don't show the prompt. This is to prevent the prompt
+        // from showing in consecutive visits.
+        if (
+          autoPromptConfig.impressionConfig.backOffSeconds &&
+          impressions.length > 0 &&
+          Date.now() - lastImpression <
+            autoPromptConfig.impressionConfig.backOffSeconds * SECOND_IN_MILLIS
+        ) {
+          return false;
+        }
+
         return true;
       }
     );
@@ -458,7 +482,15 @@ export class AutoPromptManager {
       return Promise.resolve();
     }
 
-    if (impressionEvents.includes(event.eventType)) {
+    // Prompt impression should be stored if no previous one has been stored.
+    // This is to prevent the case that user clicks the mini prompt, and both
+    // impressions of the mini and large prompts would be counted towards the
+    // cap.
+    if (
+      !this.hasStoredImpression &&
+      impressionEvents.includes(event.eventType)
+    ) {
+      this.hasStoredImpression = true;
       return this.storeEvent_(STORAGE_KEY_IMPRESSIONS);
     }
 

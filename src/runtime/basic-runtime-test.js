@@ -977,34 +977,55 @@ describes.realWin('BasicConfiguredRuntime', {}, (env) => {
         .be.false;
     });
 
-    it('should enable METERED_BY_GOOGLE on the entitlements manager', () => {
+    it('should enable METERED_BY_GOOGLE on the entitlements manager if the page is locked', () => {
       const entitlementsStub = sandbox.stub(
         EntitlementsManager.prototype,
         'enableMeteredByGoogle'
       );
+      sandbox.stub(pageConfig, 'isLocked').returns(true);
 
       configuredBasicRuntime = new ConfiguredBasicRuntime(win, pageConfig);
 
       expect(entitlementsStub).to.be.calledOnce;
     });
 
-    it('should set onNativeSubscribeRequest to handle clicks on the Metering Toast "Subscribe" button', async () => {
+    it('should not enable METERED_BY_GOOGLE on the entitlements manager if the page is unlocked', () => {
+      const entitlementsStub = sandbox.stub(
+        EntitlementsManager.prototype,
+        'enableMeteredByGoogle'
+      );
+      sandbox.stub(pageConfig, 'isLocked').returns(false);
+
+      configuredBasicRuntime = new ConfiguredBasicRuntime(win, pageConfig);
+
+      expect(entitlementsStub).to.not.be.called;
+    });
+
+    it('should set onOffersFlowRequest to handle clicks on the Metering Toast "Subscribe" button', async () => {
       expect(configuredBasicRuntime.configuredClassicRuntime()).to.exist;
       expect(
         configuredBasicRuntime
           .configuredClassicRuntime()
           .callbacks()
-          .hasSubscribeRequestCallback()
+          .hasOffersFlowRequestCallback()
       ).to.be.true;
     });
 
-    it('should call showOffers when subscribe request is triggered', async () => {
-      const showOffersStub = sandbox.stub(
-        configuredBasicRuntime.configuredClassicRuntime(),
-        'showOffers'
+    it('should dismiss the active dialog and call showOffers when offers flow request is triggered', async () => {
+      let offersOptions = null;
+      const showOffersStub = sandbox
+        .stub(configuredBasicRuntime.configuredClassicRuntime(), 'showOffers')
+        .callsFake((options) => {
+          offersOptions = options;
+        });
+      const completeAllStub = sandbox.stub(
+        configuredBasicRuntime.dialogManager(),
+        'completeAll'
       );
-      await configuredBasicRuntime.callbacks().triggerSubscribeRequest();
+      await configuredBasicRuntime.callbacks().triggerOffersFlowRequest();
       expect(showOffersStub).to.be.calledOnce;
+      expect(completeAllStub).to.be.calledOnce;
+      expect(offersOptions.isClosable).to.equal(true);
     });
   });
 });

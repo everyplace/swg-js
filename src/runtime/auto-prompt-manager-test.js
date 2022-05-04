@@ -16,10 +16,10 @@
 
 import * as audienceActionFlow from './audience-action-flow';
 import {AnalyticsEvent, EventOriginator} from '../proto/api_messages';
-import {AutoPromptConfig, UiPredicates} from '../model/auto-prompt-config';
+import {AutoPromptConfig} from '../model/auto-prompt-config';
 import {AutoPromptManager} from './auto-prompt-manager';
 import {AutoPromptType} from '../api/basic-subscriptions';
-import {ClientConfig} from '../model/client-config';
+import {ClientConfig, UiPredicates} from '../model/client-config';
 import {ClientConfigManager} from './client-config-manager';
 import {ClientEventManager} from './client-event-manager';
 import {Constants} from '../utils/constants';
@@ -164,6 +164,82 @@ describes.realWin('AutoPromptManager', {}, (env) => {
       additionalParameters: null,
     });
   });
+
+  [
+    {
+      miniPromptEventType:
+        AnalyticsEvent.IMPRESSION_SWG_CONTRIBUTION_MINI_PROMPT,
+      largePromptEventType: AnalyticsEvent.IMPRESSION_CONTRIBUTION_OFFERS,
+      dismissableEventType: AnalyticsEvent.ACTION_CONTRIBUTION_OFFERS_CLOSED,
+      autoPromptType: AutoPromptType.CONTRIBUTION,
+    },
+    {
+      miniPromptEventType:
+        AnalyticsEvent.IMPRESSION_SWG_SUBSCRIPTION_MINI_PROMPT,
+      largePromptEventType: AnalyticsEvent.IMPRESSION_OFFERS,
+      dismissableEventType: AnalyticsEvent.ACTION_SUBSCRIPTION_OFFERS_CLOSED,
+      autoPromptType: AutoPromptType.SUBSCRIPTION,
+    },
+  ].forEach(
+    ({
+      miniPromptEventType,
+      largePromptEventType,
+      dismissableEventType,
+      autoPromptType,
+    }) => {
+      it(`should not store a ${autoPromptType} impression if a previous prompt impression has been stored`, async () => {
+        storageMock
+          .expects('get')
+          .withExactArgs(STORAGE_KEY_IMPRESSIONS, /* useLocalStorage */ true)
+          .returns(Promise.resolve(null))
+          .once();
+        storageMock
+          .expects('set')
+          .withExactArgs(
+            STORAGE_KEY_IMPRESSIONS,
+            sandbox.match.any,
+            /* useLocalStorage */ true
+          )
+          .returns(Promise.resolve())
+          .exactly(1);
+        storageMock
+          .expects('get')
+          .withExactArgs(STORAGE_KEY_DISMISSALS, /* useLocalStorage */ true)
+          .returns(Promise.resolve(null))
+          .once();
+        storageMock
+          .expects('set')
+          .withExactArgs(
+            STORAGE_KEY_DISMISSALS,
+            sandbox.match.any,
+            /* useLocalStorage */ true
+          )
+          .returns(Promise.resolve())
+          .once();
+
+        await eventManagerCallback({
+          eventType: miniPromptEventType,
+          eventOriginator: EventOriginator.UNKNOWN_CLIENT,
+          isFromUserAction: null,
+          additionalParameters: null,
+        });
+
+        await eventManagerCallback({
+          eventType: largePromptEventType,
+          eventOriginator: EventOriginator.UNKNOWN_CLIENT,
+          isFromUserAction: null,
+          additionalParameters: null,
+        });
+
+        await eventManagerCallback({
+          eventType: dismissableEventType,
+          eventOriginator: EventOriginator.UNKNOWN_CLIENT,
+          isFromUserAction: null,
+          additionalParameters: null,
+        });
+      });
+    }
+  );
 
   it('should locally store contribution dismissals when contribution dismissal events are fired', async () => {
     storageMock
@@ -418,13 +494,16 @@ describes.realWin('AutoPromptManager', {}, (env) => {
     expect(alternatePromptSpy).to.not.be.called;
   });
 
-  it('should not display the mini prompt if the auto prompt config caps impressions, and the user is over the cap', async () => {
+  it('should not display the mini prompt if the auto prompt config caps impressions, and the user is over the cap, and sufficient time has not yet passed since the specified hide duration', async () => {
     const entitlements = new Entitlements();
     entitlementsManagerMock
       .expects('getEntitlements')
       .returns(Promise.resolve(entitlements))
       .once();
-    const autoPromptConfig = new AutoPromptConfig(/* maxImpressionsPerWeek*/ 2);
+    const autoPromptConfig = new AutoPromptConfig({
+      maxImpressions: 2,
+      maxImpressionsResultingHideSeconds: 10,
+    });
     const clientConfig = new ClientConfig({autoPromptConfig});
     clientConfigManagerMock
       .expects('getClientConfig')
@@ -432,7 +511,7 @@ describes.realWin('AutoPromptManager', {}, (env) => {
       .once();
     // Two stored impressions.
     const storedImpressions =
-      (CURRENT_TIME + 1).toString() + ',' + CURRENT_TIME.toString();
+      (CURRENT_TIME - 1).toString() + ',' + CURRENT_TIME.toString();
     storageMock
       .expects('get')
       .withExactArgs(STORAGE_KEY_IMPRESSIONS, /* useLocalStorage */ true)
@@ -458,13 +537,61 @@ describes.realWin('AutoPromptManager', {}, (env) => {
     expect(alternatePromptSpy).to.not.be.called;
   });
 
+  it('should display the mini prompt if the auto prompt config caps impressions, and the user is over the cap, but sufficient time has passed since the specified hide duration', async () => {
+    const entitlements = new Entitlements();
+    entitlementsManagerMock
+      .expects('getEntitlements')
+      .returns(Promise.resolve(entitlements))
+      .once();
+    const autoPromptConfig = new AutoPromptConfig({
+      maxImpressions: 2,
+      maxImpressionsResultingHideSeconds: 10,
+    });
+    const clientConfig = new ClientConfig({autoPromptConfig});
+    clientConfigManagerMock
+      .expects('getClientConfig')
+      .returns(Promise.resolve(clientConfig))
+      .once();
+    // Two stored impressions.
+    const storedImpressions =
+      (CURRENT_TIME - 20000).toString() +
+      ',' +
+      (CURRENT_TIME - 11000).toString();
+    storageMock
+      .expects('get')
+      .withExactArgs(STORAGE_KEY_IMPRESSIONS, /* useLocalStorage */ true)
+      .returns(Promise.resolve(storedImpressions))
+      .once();
+    storageMock
+      .expects('get')
+      .withExactArgs(STORAGE_KEY_DISMISSALS, /* useLocalStorage */ true)
+      .returns(Promise.resolve(null))
+      .once();
+    storageMock
+      .expects('get')
+      .withExactArgs(STORAGE_KEY_DISMISSED_PROMPTS, /* useLocalStorage */ true)
+      .returns(Promise.resolve(null))
+      .once();
+    miniPromptApiMock.expects('create').once();
+
+    await autoPromptManager.showAutoPrompt({
+      autoPromptType: AutoPromptType.CONTRIBUTION,
+      alwaysShow: false,
+      displayLargePromptFn: alternatePromptSpy,
+    });
+    expect(alternatePromptSpy).to.not.be.called;
+  });
+
   it('should display the mini prompt if the auto prompt config caps impressions, and the user is under the cap', async () => {
     const entitlements = new Entitlements();
     entitlementsManagerMock
       .expects('getEntitlements')
       .returns(Promise.resolve(entitlements))
       .once();
-    const autoPromptConfig = new AutoPromptConfig(/* maxImpressionsPerWeek*/ 2);
+    const autoPromptConfig = new AutoPromptConfig({
+      maxImpressions: 2,
+      maxImpressionsResultingHideSeconds: 10,
+    });
     const clientConfig = new ClientConfig({autoPromptConfig});
     clientConfigManagerMock
       .expects('getClientConfig')
@@ -497,13 +624,59 @@ describes.realWin('AutoPromptManager', {}, (env) => {
     expect(alternatePromptSpy).to.not.be.called;
   });
 
+  it('should not display the mini prompt if the auto prompt config caps impressions, and the user is under the cap, but sufficient time has not yet passed since the specified backoff duration', async () => {
+    const entitlements = new Entitlements();
+    entitlementsManagerMock
+      .expects('getEntitlements')
+      .returns(Promise.resolve(entitlements))
+      .once();
+    const autoPromptConfig = new AutoPromptConfig({
+      impressionBackOffSeconds: 10,
+      maxImpressions: 2,
+      maxImpressionsResultingHideSeconds: 5,
+    });
+    const clientConfig = new ClientConfig({autoPromptConfig});
+    clientConfigManagerMock
+      .expects('getClientConfig')
+      .returns(Promise.resolve(clientConfig))
+      .once();
+    // One stored impression.
+    const storedImpressions = (CURRENT_TIME - 6000).toString();
+    storageMock
+      .expects('get')
+      .withExactArgs(STORAGE_KEY_IMPRESSIONS, /* useLocalStorage */ true)
+      .returns(Promise.resolve(storedImpressions))
+      .once();
+    storageMock
+      .expects('get')
+      .withExactArgs(STORAGE_KEY_DISMISSALS, /* useLocalStorage */ true)
+      .returns(Promise.resolve(null))
+      .once();
+    storageMock
+      .expects('get')
+      .withExactArgs(STORAGE_KEY_DISMISSED_PROMPTS, /* useLocalStorage */ true)
+      .returns(Promise.resolve(null))
+      .once();
+    miniPromptApiMock.expects('create').never();
+
+    await autoPromptManager.showAutoPrompt({
+      autoPromptType: AutoPromptType.CONTRIBUTION,
+      alwaysShow: false,
+      displayLargePromptFn: alternatePromptSpy,
+    });
+    expect(alternatePromptSpy).to.not.be.called;
+  });
+
   it('should display the large prompt if the auto prompt config caps impressions, and the user is under the cap', async () => {
     const entitlements = new Entitlements();
     entitlementsManagerMock
       .expects('getEntitlements')
       .returns(Promise.resolve(entitlements))
       .once();
-    const autoPromptConfig = new AutoPromptConfig(/* maxImpressionsPerWeek*/ 2);
+    const autoPromptConfig = new AutoPromptConfig({
+      maxImpressions: 2,
+      maxImpressionsResultingHideSeconds: 10,
+    });
     const clientConfig = new ClientConfig({autoPromptConfig});
     clientConfigManagerMock
       .expects('getClientConfig')
@@ -542,7 +715,10 @@ describes.realWin('AutoPromptManager', {}, (env) => {
       .expects('getEntitlements')
       .returns(Promise.resolve(entitlements))
       .once();
-    const autoPromptConfig = new AutoPromptConfig(/* maxImpressionsPerWeek*/ 2);
+    const autoPromptConfig = new AutoPromptConfig({
+      maxImpressions: 2,
+      maxImpressionsResultingHideSeconds: 10,
+    });
     const clientConfig = new ClientConfig({autoPromptConfig});
     clientConfigManagerMock
       .expects('getClientConfig')
@@ -583,13 +759,14 @@ describes.realWin('AutoPromptManager', {}, (env) => {
       .expects('getEntitlements')
       .returns(Promise.resolve(entitlements))
       .once();
-    const autoPromptConfig = new AutoPromptConfig(
-      /* maxImpressionsPerWeek */ 2,
-      /* displayDelaySeconds */ 0,
-      /* backoffSeconds */ 0,
-      /* maxDismissalsPerWeek */ 1,
-      /* maxDismissalsResultingHideSeconds */ 10
-    );
+    const autoPromptConfig = new AutoPromptConfig({
+      displayDelaySeconds: 0,
+      dismissalBackOffSeconds: 0,
+      maxDismissalsPerWeek: 1,
+      maxDismissalsResultingHideSeconds: 10,
+      maxImpressions: 2,
+      maxImpressionsResultingHideSeconds: 10,
+    });
     const clientConfig = new ClientConfig({autoPromptConfig});
     clientConfigManagerMock
       .expects('getClientConfig')
@@ -629,13 +806,14 @@ describes.realWin('AutoPromptManager', {}, (env) => {
       .expects('getEntitlements')
       .returns(Promise.resolve(entitlements))
       .once();
-    const autoPromptConfig = new AutoPromptConfig(
-      /* maxImpressionsPerWeek */ 2,
-      /* displayDelaySeconds */ 0,
-      /* backoffSeconds */ 0,
-      /* maxDismissalsPerWeek */ 1,
-      /* maxDismissalsResultingHideSeconds */ 10
-    );
+    const autoPromptConfig = new AutoPromptConfig({
+      displayDelaySeconds: 0,
+      dismissalBackOffSeconds: 0,
+      maxDismissalsPerWeek: 1,
+      maxDismissalsResultingHideSeconds: 10,
+      maxImpressions: 2,
+      maxImpressionsResultingHideSeconds: 10,
+    });
     const clientConfig = new ClientConfig({autoPromptConfig});
     clientConfigManagerMock
       .expects('getClientConfig')
@@ -669,19 +847,20 @@ describes.realWin('AutoPromptManager', {}, (env) => {
     expect(alternatePromptSpy).to.not.be.called;
   });
 
-  it('should not display the mini prompt if the auto prompt config caps dismissals, and the user is under the cap, but sufficient time has not yet passed since the specified hide duration', async () => {
+  it('should not display the mini prompt if the auto prompt config caps dismissals, and the user is under the cap, but sufficient time has not yet passed since the backoff duration', async () => {
     const entitlements = new Entitlements();
     entitlementsManagerMock
       .expects('getEntitlements')
       .returns(Promise.resolve(entitlements))
       .once();
-    const autoPromptConfig = new AutoPromptConfig(
-      /* maxImpressionsPerWeek */ 2,
-      /* displayDelaySeconds */ 0,
-      /* backoffSeconds */ 10,
-      /* maxDismissalsPerWeek */ 2,
-      /* maxDismissalsResultingHideSeconds */ 5
-    );
+    const autoPromptConfig = new AutoPromptConfig({
+      displayDelaySeconds: 0,
+      dismissalBackOffSeconds: 10,
+      maxDismissalsPerWeek: 2,
+      maxDismissalsResultingHideSeconds: 5,
+      maxImpressions: 2,
+      maxImpressionsResultingHideSeconds: 10,
+    });
     const clientConfig = new ClientConfig({autoPromptConfig});
     clientConfigManagerMock
       .expects('getClientConfig')
@@ -715,19 +894,20 @@ describes.realWin('AutoPromptManager', {}, (env) => {
     expect(alternatePromptSpy).to.not.be.called;
   });
 
-  it('should display the mini prompt if the auto prompt config caps dismissals, and the user is under the cap, and sufficient time has passed since the specified hide duration', async () => {
+  it('should display the mini prompt if the auto prompt config caps dismissals, and the user is under the cap, and sufficient time has passed since the specified backoff duration', async () => {
     const entitlements = new Entitlements();
     entitlementsManagerMock
       .expects('getEntitlements')
       .returns(Promise.resolve(entitlements))
       .once();
-    const autoPromptConfig = new AutoPromptConfig(
-      /* maxImpressionsPerWeek */ 2,
-      /* displayDelaySeconds */ 0,
-      /* backoffSeconds */ 5,
-      /* maxDismissalsPerWeek */ 2,
-      /* maxDismissalsResultingHideSeconds */ 10
-    );
+    const autoPromptConfig = new AutoPromptConfig({
+      displayDelaySeconds: 0,
+      dismissalBackOffSeconds: 5,
+      maxDismissalsPerWeek: 2,
+      maxDismissalsResultingHideSeconds: 10,
+      maxImpressions: 2,
+      maxImpressionsResultingHideSeconds: 10,
+    });
     const clientConfig = new ClientConfig({autoPromptConfig});
     clientConfigManagerMock
       .expects('getClientConfig')
@@ -979,13 +1159,14 @@ describes.realWin('AutoPromptManager', {}, (env) => {
     let articleExpectation;
 
     beforeEach(() => {
-      const autoPromptConfig = new AutoPromptConfig(
-        /* maxImpressionsPerWeek */ 2,
-        /* displayDelaySeconds */ 0,
-        /* backoffSeconds */ 5,
-        /* maxDismissalsPerWeek */ 2,
-        /* maxDismissalsResultingHideSeconds */ 10
-      );
+      const autoPromptConfig = new AutoPromptConfig({
+        displayDelaySeconds: 0,
+        dismissalBackOffSeconds: 5,
+        maxDismissalsPerWeek: 2,
+        maxDismissalsResultingHideSeconds: 10,
+        maxImpressions: 2,
+        maxImpressionsResultingHideSeconds: 10,
+      });
       const uiPredicates = new UiPredicates(
         /* canDisplayAutoPrompt */ true,
         /* canDisplayButton */ true
