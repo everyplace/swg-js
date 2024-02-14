@@ -22,6 +22,7 @@ if (!isCiBuild()) {
   execOrDie('npm i');
 }
 
+const dotenv = require('dotenv').config();
 const $$ = require('gulp-load-plugins')();
 const gulp = $$.help(require('gulp'));
 const {assets} = require('./build-system/tasks/assets');
